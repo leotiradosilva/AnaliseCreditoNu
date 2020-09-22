@@ -1,0 +1,55 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      docker: 18
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - $(aws ecr get-login --no-include-email --region us-east-1)
+      - echo "Branch:" $CODEBUILD_WEBHOOK_TRIGGER " Source:" $CODEBUILD_RESOLVED_SOURCE_VERSION
+      - AWS_CONTAINER=fmi-cliente
+      - |
+         if expr "${CODEBUILD_WEBHOOK_TRIGGER}" = "branch/develop"; then
+           AWS_ACCOUNT=544005205437
+           BUCKET_DEPLOY_APP=gcb-dev-deploy-app
+           BUCKET_CONFIGS=gcb-dev
+           BUCKET_CLOUDFRONT=gcb-dev-root-cloudfrontstack-8d-staticfilesbucket-wtlb4xf4qnru
+         fi
+      - |
+         if expr "${CODEBUILD_WEBHOOK_TRIGGER}" = "branch/master"; then
+           AWS_ACCOUNT=592204574512
+           BUCKET_DEPLOY_APP=gcb-prod-deploy-app
+           BUCKET_CONFIGS=gcb-prod
+           BUCKET_CLOUDFRONT=gcb-prod-root-cloudfrontstack-b-staticfilesbucket-iet7duxqy4ru
+         fi
+      - REPOSITORY_URI=$AWS_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/gcb/$AWS_CONTAINER
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - aws s3 cp s3://$BUCKET_CONFIGS/php/configs/$AWS_CONTAINER/database.php application/config/
+      - aws s3 cp s3://$BUCKET_CONFIGS/php/configs/$AWS_CONTAINER/config.php application/config/
+      - aws s3 cp s3://$BUCKET_CONFIGS/php/configs/$AWS_CONTAINER/.htaccess .
+      - aws s3 cp assets s3://$BUCKET_CLOUDFRONT/$AWS_CONTAINER/ --recursive
+      - docker build -t $REPOSITORY_URI:latest -f Dockerfile .
+      - |
+          printf \
+            '[{"name":"%s","imageUri":"%s"}]' \
+            $AWS_CONTAINER \
+            $REPOSITORY_URI:$IMAGE_TAG > \
+            imagedefinitions.json
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+      - zip deploy-$AWS_CONTAINER.zip imagedefinitions.json
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - aws s3 cp deploy-$AWS_CONTAINER.zip s3://$BUCKET_DEPLOY_APP/
+      
+      
